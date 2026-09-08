@@ -18,10 +18,9 @@ class SecureTraderApp:
     def __init__(self, root):
         self.root = root
         self.root.title("SecureTrader - Automated Real Execution Bot")
-        self.root.geometry("650x500")
+        self.root.geometry("750x520")
 
         # Configuration Guardrails
-        self.MAX_TRADE_DOLLAR_CAP = 100.00  # Hard ceiling on single trade size ($)
         self.USE_PAPER_TRADING = os.getenv("USE_PAPER_TRADING", "True").lower() == "true"
         
         # Load Alpaca API Keys
@@ -50,7 +49,7 @@ class SecureTraderApp:
         except Exception as e:
             messagebox.showerror("Broker Connection Error", f"Failed to connect to Alpaca: {e}")
 
-    def sanitize_input(self, ticker: str, shares_str: str):
+    def sanitize_input(self, ticker: str, shares_str: str, cap_str: str):
         """Input sanitization and security boundary validation."""
         clean_ticker = ticker.strip().upper()
         if not re.match(r"^[A-Z]{1,5}$", clean_ticker):
@@ -63,7 +62,14 @@ class SecureTraderApp:
         except ValueError:
             raise ValueError("Invalid Shares: Must be a positive integer between 1 and 500.")
 
-        return clean_ticker, shares
+        try:
+            max_cap = float(cap_str)
+            if max_cap <= 0:
+                raise ValueError()
+        except ValueError:
+            raise ValueError("Invalid Cap Amount: Must be a positive number.")
+
+        return clean_ticker, shares, max_cap
 
     def predict_price(self, symbol: str):
         """Predicts next close price using short-term Linear Regression."""
@@ -79,7 +85,11 @@ class SecureTraderApp:
         model.fit(X, y)
         
         current_price = round(float(df['Close'].iloc[-1]), 2)
-        predicted_price = round(float(model.predict(np.array([[len(df)]]))[0]), 2)
+        
+        # Fixed Scikit-Learn feature warning by passing DataFrame matching training feature names
+        next_day = pd.DataFrame({'Day': [len(df)]})
+        predicted_price = round(float(model.predict(next_day)[0]), 2)
+        
         return current_price, predicted_price
 
     def build_ui(self):
@@ -88,7 +98,7 @@ class SecureTraderApp:
         lbl_mode.pack(pady=5)
 
         # Control Panel
-        frame_controls = tk.LabelFrame(self.root, text="Order & Prediction Controls", padx=10, pady=10)
+        frame_controls = tk.LabelFrame(self.root, text="Order & Risk Controls", padx=10, pady=10)
         frame_controls.pack(fill="x", padx=10, pady=5)
 
         tk.Label(frame_controls, text="Ticker:").grid(row=0, column=0)
@@ -101,13 +111,19 @@ class SecureTraderApp:
         self.entry_shares.insert(0, "1")
         self.entry_shares.grid(row=0, column=3, padx=5)
 
-        btn_run = tk.Button(frame_controls, text="Analyze & Execute", command=self.process_trade)
-        btn_run.grid(row=0, column=4, padx=10)
+        # Dynamic Trade Limit Cap Input Box
+        tk.Label(frame_controls, text="Max Cap ($):").grid(row=0, column=4)
+        self.entry_cap = tk.Entry(frame_controls, width=8)
+        self.entry_cap.insert(0, "100.00")
+        self.entry_cap.grid(row=0, column=5, padx=5)
 
-        # Output Box
-        self.txt_log = tk.Text(self.root, height=18, width=75)
+        btn_run = tk.Button(frame_controls, text="Analyze & Execute", command=self.process_trade)
+        btn_run.grid(row=0, column=6, padx=10)
+
+        # Output Log Box
+        self.txt_log = tk.Text(self.root, height=18, width=85)
         self.txt_log.pack(padx=10, pady=10)
-        self.log(f"System Initialized. Maximum single-trade cap: ${self.MAX_TRADE_DOLLAR_CAP:.2f}")
+        self.log("System Initialized. Set your custom trade cap in the 'Max Cap ($)' box.")
 
     def log(self, text: str):
         self.txt_log.insert(tk.END, text + "\n")
@@ -116,7 +132,11 @@ class SecureTraderApp:
     def process_trade(self):
         # Step 1: Input Validation
         try:
-            symbol, shares = self.sanitize_input(self.entry_ticker.get(), self.entry_shares.get())
+            symbol, shares, max_trade_cap = self.sanitize_input(
+                self.entry_ticker.get(), 
+                self.entry_shares.get(), 
+                self.entry_cap.get()
+            )
         except ValueError as err:
             messagebox.showerror("Security Validation Error", str(err))
             return
@@ -132,11 +152,11 @@ class SecureTraderApp:
 
         total_cost = shares * current_price
         self.log(f"Current Price: ${current_price:.2f} | Predicted Price: ${predicted_price:.2f}")
-        self.log(f"Estimated Order Value: ${total_cost:.2f}")
+        self.log(f"Estimated Order Value: ${total_cost:.2f} (Current Cap Ceiling: ${max_trade_cap:.2f})")
 
-        # Step 3: Hard Dollar Safety Guardrail Check
-        if total_cost > self.MAX_TRADE_DOLLAR_CAP:
-            msg = f"Security Block: Order total (${total_cost:.2f}) exceeds trade limit cap (${self.MAX_TRADE_DOLLAR_CAP:.2f})."
+        # Step 3: Dynamic Dollar Safety Guardrail Check
+        if total_cost > max_trade_cap:
+            msg = f"Security Block: Order total (${total_cost:.2f}) exceeds configured trade cap (${max_trade_cap:.2f})."
             self.log(msg)
             messagebox.showwarning("Risk Blocked", msg)
             return
@@ -158,6 +178,7 @@ class SecureTraderApp:
             f"Shares: {shares}\n"
             f"Estimated Price: ${current_price:.2f}\n"
             f"Total Cost: ${total_cost:.2f}\n"
+            f"Configured Trade Cap: ${max_trade_cap:.2f}\n"
             f"Destination: {target_env}\n\n"
             f"Authorize execution?"
         )
